@@ -292,6 +292,10 @@ bool hostbuf_register(void *hostbuf_ptr, uint64_t offset, uint64_t size) {
     HostBuffer *hostbuf = (HostBuffer *)hostbuf_ptr;
 
     if (!hostbuf || offset + size > hostbuf->size) {
+        /* Say why: a caller that registered a slice of a buffer it had not
+         * extended yet saw only a silent false. */
+        log(AIMDO_LOG_ERROR, "%s: refused offset=%llu size=%llu (buffer size=%llu)\n",
+            __func__, (ull)offset, (ull)size, hostbuf ? (ull)hostbuf->size : 0);
         return false;
     }
     log(VERBOSE, "%s: hostbuf=%p offset=%llu size=%llu\n",

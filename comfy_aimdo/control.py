@@ -8,6 +8,14 @@ import importlib.util
 lib = None
 devctxs = []
 _log_callback = None
+# Which implementation the loaded library is: "cuda", "rocm" or "npu". Callers
+# that pick a PyTorch allocator need it, because each device API has its own.
+backend = None
+
+# True once the Ascend pluggable allocator is built: recording a memory graph
+# needs the stream that allocator receives, and its absence on NPU means the
+# graph would silently record nothing.
+npu_pluggable_allocator = False
 
 _LOG_CALLBACK = ctypes.CFUNCTYPE(None, ctypes.c_int, ctypes.c_char_p)
 _LOG_LEVELS = {
@@ -67,7 +75,7 @@ def detect_vendor():
 
 
 def init(implementation: str | None = None, simple_vram_headroom: int | None = None, nvml_pressure: bool = False):
-    global lib, _log_callback
+    global lib, _log_callback, backend
 
     if lib is not None:
         if simple_vram_headroom is not None:
@@ -107,6 +115,8 @@ def init(implementation: str | None = None, simple_vram_headroom: int | None = N
         logging.info(f"NOTE: comfy-aimdo currently only supports Nvidia, AMD and Ascend NPU devices")
         return False
 
+    backend = implementation
+
     lib.set_log_callback.argtypes = [_LOG_CALLBACK]
     lib.set_log_callback.restype = None
     _log_callback = _LOG_CALLBACK(_native_log)
@@ -114,6 +124,9 @@ def init(implementation: str | None = None, simple_vram_headroom: int | None = N
 
     lib.get_total_vram_usage.argtypes = [ctypes.c_void_p]
     lib.get_total_vram_usage.restype = ctypes.c_uint64
+
+    lib.plug_release_pool.argtypes = []
+    lib.plug_release_pool.restype = ctypes.c_size_t
 
     lib.aimdo_analyze.argtypes = [ctypes.c_void_p]
 
@@ -266,6 +279,18 @@ def set_log_info(): lib.set_log_level_info()
 def set_log_debug(): lib.set_log_level_debug()
 def set_log_verbose(): lib.set_log_level_verbose()
 def set_log_vverbose(): lib.set_log_level_vverbose()
+
+def release_pool():
+    """Give back the bytes a pluggable allocator still holds after torch released them.
+
+    The Ascend path pools freed blocks instead of returning them to the driver;
+    the CUDA and ROCm paths return 0 because they release on free. deinit() calls
+    this, so an explicit call is only needed to reclaim the memory mid-process.
+    """
+    if lib is None:
+        return 0
+    return int(lib.plug_release_pool())
+
 
 def analyze():
     if lib is None:

@@ -106,7 +106,7 @@ static inline size_t accounted_alloc_size(size_t size) {
     return rounded;
 }
 
-static inline void account_alloc(CUdeviceptr ptr, size_t size) {
+void allocations_account_alloc(CUdeviceptr ptr, size_t size) {
     unsigned int h = size_hash(ptr);
     SizeEntry *entry;
 
@@ -123,7 +123,7 @@ static inline void account_alloc(CUdeviceptr ptr, size_t size) {
     allocations_unlock();
 }
 
-static inline void account_free(CUdeviceptr ptr, CUstream hStream) {
+void allocations_account_free(CUdeviceptr ptr, CUstream hStream) {
     SizeEntry *entry;
     SizeEntry **prev;
     unsigned int h = size_hash(ptr);
@@ -168,7 +168,7 @@ int aimdo_cuda_malloc(CUdeviceptr *devPtr, size_t size,
 
     if (CHECK_CU(true_cuMemAlloc_v2(&dptr, size))) {
         *devPtr = dptr;
-        account_alloc(*devPtr, size);
+        allocations_account_alloc(*devPtr, size);
         return 0;
     }
 
@@ -176,7 +176,7 @@ int aimdo_cuda_malloc(CUdeviceptr *devPtr, size_t size,
     status = true_cuMemAlloc_v2(&dptr, size);
     if (CHECK_CU(status)) {
         *devPtr = dptr;
-        account_alloc(*devPtr, size);
+        allocations_account_alloc(*devPtr, size);
         return 0;
     }
 
@@ -206,7 +206,7 @@ int aimdo_cuda_free(CUdeviceptr devPtr,
         return status;
     }
 
-    account_free(devPtr, NULL);
+    allocations_account_free(devPtr, NULL);
     return status;
 }
 
@@ -245,7 +245,7 @@ int aimdo_cuda_malloc_async(CUdeviceptr *devPtr, size_t size, CUstream hStream,
     return status; /* Fail */
 
 success:
-    account_alloc(*devPtr, size);
+    allocations_account_alloc(*devPtr, size);
 
     log(VVERBOSE, "%s (return): ptr=%p\n", __func__, (void *)(uintptr_t)*devPtr);
     return 0;
@@ -278,6 +278,6 @@ int aimdo_cuda_free_async(CUdeviceptr devPtr, CUstream hStream,
         return status;
     }
 
-    account_free(devPtr, hStream);
+    allocations_account_free(devPtr, hStream);
     return status;
 }

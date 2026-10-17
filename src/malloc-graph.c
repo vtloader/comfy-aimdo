@@ -152,6 +152,45 @@ bool malloc_graph_sync_paused(void) {
     return active_graph && active_graph->sync_paused;
 }
 
+/* Ranges of graphs that no longer accept frees: an aborted, completed or
+ * destroyed graph. torch frees the blocks it took from a graph after that point,
+ * so the Ascend pluggable free callback sees addresses that belong to nobody any
+ * more. They are recognized here; the caller searches its own tables first, so a
+ * live allocation of ours can never be mistaken for one of these. */
+#define GRAPH_RETIRED_RANGES 64
+
+typedef struct {
+    CUdeviceptr base;
+    size_t bytes;
+} GraphRetiredRange;
+
+static GraphRetiredRange graph_retired_ranges[GRAPH_RETIRED_RANGES];
+static size_t graph_retired_count;
+
+static void graph_retire_range(VirtualRange *range) {
+    if (range == NULL || range->address == 0 || range->bytes == 0) {
+        return;
+    }
+
+    graph_retired_ranges[graph_retired_count % GRAPH_RETIRED_RANGES] =
+        (GraphRetiredRange){range->address, range->bytes};
+    graph_retired_count++;
+}
+
+bool malloc_graph_owns_address(CUdeviceptr ptr) {
+    size_t seen = graph_retired_count < GRAPH_RETIRED_RANGES
+                  ? graph_retired_count : GRAPH_RETIRED_RANGES;
+
+    for (size_t i = 0; i < seen; i++) {
+        if (graph_retired_ranges[i].base != 0
+                && ptr >= graph_retired_ranges[i].base
+                && ptr - graph_retired_ranges[i].base < graph_retired_ranges[i].bytes) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void free_small_ranges(SmallRange *range) {
     while (range) {
         SmallRange *next = range->next;
@@ -671,11 +710,15 @@ static bool abort_graph(MallocGraph *g) {
         g->state = state;
         if (!materialize(g, state->cursor) || !collect_rogue_candidates(g)) {
             g->state = top;
+            graph_retire_range(g->base);
+            graph_retire_range(g->small_base);
             active_graph = NULL;
             return false;
         }
     }
     g->state = top;
+    graph_retire_range(g->base);
+    graph_retire_range(g->small_base);
     active_graph = NULL;
 
     if (!handoff_rogues(g)) {
@@ -1185,6 +1228,10 @@ SHARED_EXPORT int malloc_graph_pop(void *handle) {
 
     if (!g->state) {
         g->complete = true;
+        /* The graph stops taking frees here, but torch may still hold its
+         * blocks; the range is remembered until the graph is destroyed. */
+        graph_retire_range(g->base);
+        graph_retire_range(g->small_base);
         active_graph = NULL;
     }
     return result;
@@ -1271,6 +1318,8 @@ SHARED_EXPORT void malloc_graph_destroy(void *handle) {
         physical_page_unref(g->small_physical_pages[i]);
     }
 
+    graph_retire_range(g->base);
+    graph_retire_range(g->small_base);
     virtual_range_unref(g->base);
     virtual_range_unref(g->small_base);
     free_small_ranges(g->root.small_snapshot);

@@ -100,6 +100,16 @@ bool set_devctx_for_device(int device_id) {
     return false;
 }
 
+/* A free can arrive for a block that belongs to a device which is not the
+ * calling thread's current one, so the lookup has to be able to walk them. */
+size_t aimdo_devctx_count(void) {
+    return g_all_devctx_count;
+}
+
+AimdoContext *aimdo_devctx_at(size_t index) {
+    return index < g_all_devctx_count ? &g_all_devctxs[index] : NULL;
+}
+
 bool set_devctx_for_current_cuda_device(void) {
     CUdevice device;
 
@@ -219,6 +229,7 @@ void cleanup(void) {
         hostbuf_file_reader_cleanup();
         aimdo_wddm_cleanup();
         va_pool_cleanup();
+        plug_release_pool();
         allocations_cleanup();
 
         free(highest_priority_p); /* FIXME: move the model_vbar. */
@@ -228,6 +239,7 @@ void cleanup(void) {
     peer_cache_cleanup();
 #endif
 
+    plug_teardown();
     free(g_all_devctxs);
     g_all_devctxs = NULL;
     g_all_devctx_count = 0;

@@ -152,6 +152,27 @@ class CUDAPluggableAllocator(torch.cuda.memory.CUDAPluggableAllocator):
         assert free_fn is not None
         self._allocator = torch._C._cuda_customAllocator(alloc_fn, free_fn)
 
+def get_npu_allocator():
+    """The Ascend pluggable allocator, built from the library comfy_aimdo holds.
+
+    torch_npu's own loader dlopens the file again and takes the allocator's
+    addresses from that second handle; taking them from the handle this module
+    already holds keeps one copy of the allocator state.
+    """
+    import torch_npu
+
+    class _NPUPluggableAllocator(torch_npu.npu.memory.NPUPluggableAllocator):
+        def __init__(self):
+            alloc_fn = ctypes.cast(control.lib.alloc_fn_npu, ctypes.c_void_p).value
+            free_fn = ctypes.cast(control.lib.free_fn_npu, ctypes.c_void_p).value
+            assert alloc_fn is not None
+            assert free_fn is not None
+            self._allocator = torch_npu._C._npu_customAllocator(alloc_fn, free_fn)
+
+    control.npu_pluggable_allocator = True
+    return _NPUPluggableAllocator()
+
+
 def get_torch_allocator():
     #As of this writing (pytorch 2.10), pytorch MemPools + CUDAPluggableAllocator
     #considers the Mempool and pool usage context each as a hard reference to the
@@ -159,5 +180,9 @@ def get_torch_allocator():
     #suggests that the assumptions of cudaGraphs completely prohibits pool cleanup
     #on VRAM pressure which ultimately makes this un-usable for our high pressure
     #allocator.
+    if control.lib is None:
+        return None
+    if control.backend == "npu":
+        return get_npu_allocator()
     logging.warning(f"WARNING: Aimdo+CUDAPluggableAllocator is experimental and unsupported.")
-    return None if control.lib is None else CUDAPluggableAllocator()
+    return CUDAPluggableAllocator()

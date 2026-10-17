@@ -255,5 +255,29 @@ void allocations_cleanup(void);
 void allocations_lock(void);
 void allocations_unlock(void);
 void allocations_analyze(bool only_dirty);
+
+/* pyt-cu-plug-alloc-async.c: the process-wide usage counter. Every pluggable
+ * allocator entry point must keep it, whatever memory it hands out, because
+ * the budget term and get_total_vram_usage() read it. */
+void allocations_account_alloc(CUdeviceptr ptr, size_t size);
+void allocations_account_free(CUdeviceptr ptr, CUstream hStream);
+
+/* pyt-plug-alloc.c: releases blocks a pluggable allocator still holds after
+ * torch released them (the Ascend path pools them), and returns the bytes. */
+size_t plug_release_pool(void);
+
+/* pyt-plug-alloc.c: marks the process as torn down. torch keeps the allocator
+ * callbacks registered, so late calls have to stop before touching per-context
+ * state that cleanup() already freed. */
+void plug_teardown(void);
+
+/* control.c: the initialized device contexts, for callers that have to search
+ * every device because their API carries no device (the Ascend free callback). */
+size_t aimdo_devctx_count(void);
+AimdoContext *aimdo_devctx_at(size_t index);
+
+/* malloc-graph.c: does this address fall inside a range a graph already returned
+ * to the driver? Callers search their own tables first. */
+bool malloc_graph_owns_address(CUdeviceptr ptr);
 SHARED_EXPORT
 void aimdo_analyze(void *devctx);

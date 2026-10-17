@@ -40,12 +40,12 @@ class MallocGraph:
     @contextlib.contextmanager
     def use_stream(self, stream):
         previous = self._stream
-        self._call(control.lib.malloc_graph_set_stream, ctypes.c_void_p(stream.cuda_stream))
+        self._call(control.lib.malloc_graph_set_stream, ctypes.c_void_p(stream_value(stream)))
         self._stream = stream
         try:
             yield
         finally:
-            self._call(control.lib.malloc_graph_set_stream, ctypes.c_void_p(previous.cuda_stream))
+            self._call(control.lib.malloc_graph_set_stream, ctypes.c_void_p(stream_value(previous)))
             self._stream = previous
 
     def iterate(self, name=None):
@@ -75,9 +75,24 @@ class MallocGraph:
             self._handle = None
 
 
+def stream_value(stream):
+    """The raw stream handle torch exposes: CUDA names it cuda_stream, torch_npu npu_stream."""
+    for name in ("cuda_stream", "npu_stream"):
+        value = getattr(stream, name, None)
+        if value is not None:
+            return value
+    raise AttributeError("Unsupported stream object: " + type(stream).__name__)
+
+
 def record(stream, assert_graph_breaks=False):
+    if getattr(getattr(stream, "device", None), "type", None) == "npu" and not control.npu_pluggable_allocator:
+        raise NotImplementedError(
+            "Recording a memory graph on the Ascend NPU needs comfy_aimdo.torch's NPU pluggable "
+            "allocator: it is the only NPU path that receives the stream a graph matches against, "
+            "so without it the graph would record nothing. Build it and hand it to "
+            "torch.npu.memory.change_current_allocator() before recording.")
     handle = control.lib.malloc_graph_create(
-        control.get_devctx(stream.device.index), ctypes.c_void_p(stream.cuda_stream),
+        control.get_devctx(stream.device.index), ctypes.c_void_p(stream_value(stream)),
         assert_graph_breaks,
     )
     if not handle:

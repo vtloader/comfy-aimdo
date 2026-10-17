@@ -4,9 +4,9 @@ This project is a pytorch VRAM allocator that implements on-demand offloading of
 
 ## Support:
 
-* **Nvidia GPUs** (CUDA) **and AMD GPUs** (ROCm/HIP)
+* **Nvidia GPUs** (CUDA), **AMD GPUs** (ROCm/HIP) **and Ascend NPUs** (CANN with torch_npu)
 * **PyTorch 2.8+**
-* **CUDA 12.8+** (Nvidia) / **ROCm 7+** (AMD)
+* **CUDA 12.8+** (Nvidia) / **ROCm 7+** (AMD) / **CANN 9.x** (Ascend)
 * **Windows 11+** / **Linux** as per python ManyLinux support
 
 ---
@@ -50,6 +50,14 @@ see examples/example.py
 * For consistency with VBAR memory management, main pytorch allocator plugin is also implemented with `cuMemAddressReserve` -> `cuMemCreate` -> `cuMemMap`. This also behaves a lot better on Windows systems with System Memory fallback.
 
 On AMD, the equivalent HIP APIs (`hipMemAddressReserve` -> `hipMemCreate` -> `hipMemMap`, and their converse calls) are used throughout via the same flow.
+
+On Ascend, the same flow uses the ACL equivalents (`halMemAddressReserve`/`halMemAddressFree` for the range, `aclrtMallocPhysical`/`aclrtMapMem`/`aclrtMemSetAccess` for the physical pages). Two device facts shape the NPU code paths:
+
+* The pluggable allocator reserves 32 bytes of slack on every block, because this CANN/SoC requires that padding, and it **pools** blocks torch releases instead of returning them to the driver: a released block was reclaimed while a queued kernel was still reading it, which the device reports as `aicore 507035, MTE accesses an invalid GM address`. `control.release_pool()` and `deinit()` give the pooled bytes back.
+* Recording a memory graph is driven by the pluggable allocator's stream, so `record()` needs it installed and refuses on NPU otherwise (there is no `cudaMallocAsync` equivalent to record through).
+* Releasing a range unmaps its chunks one at a time: the HAL unmaps the single mapping that contains the pointer it is given, so one `cuMemUnmap()` at the base left every later chunk mapped and `halMemAddressFree()` refused the range with an ACL runtime error, keeping that reservation alive for the rest of the process. `vrambuf_destroy()` unmaps per chunk, so the address space is handed back and reused.
+* `free` carries no device on this backend, so it searches every initialized context for the block (a second device, or a copy engine, can be the calling thread's current one) before reporting it unknown. Addresses inside the range of a graph that has stopped accepting frees (aborted, completed or destroyed) are recognized the same way, because torch frees a graph's blocks after the graph is gone.
+* A `HostBuffer` registers what it commits as it grows, so those bytes are registered once: this CANN refuses a second registration of the same range with `host memory range already registered`. `register(offset, size)` is for a slice of a buffer committed with `register=False`.
 
 ## Caveats:
 

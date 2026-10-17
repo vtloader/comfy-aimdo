@@ -156,8 +156,19 @@ bool vrambuf_destroy(void *arg) {
     }
 
     if (buf->allocated > 0) {
-        CHECK_CU(cuMemUnmap(buf->base_ptr, buf->allocated));
-        unmap_workaround(buf->base_ptr, buf->allocated);
+        /* One mapping per VRAM_CHUNK_SIZE chunk (vrambuf_grow maps them one at a
+         * time through three_stooges), so one unmap per chunk. The Ascend HAL
+         * unmaps the single mapping that contains the pointer it is handed
+         * (halMemUnmap(void *)), so a lone call at the base left every later
+         * chunk mapped; halMemAddressFree then refused the range with "ACL
+         * runtime error" and the whole reservation stayed behind. A range unmap
+         * on CUDA and ROCm is equivalent done chunk by chunk. */
+        for (i = 0; i < buf->allocated; i += VRAM_CHUNK_SIZE) {
+            size_t chunk = buf->allocated - i < VRAM_CHUNK_SIZE ? buf->allocated - i : VRAM_CHUNK_SIZE;
+
+            CHECK_CU(cuMemUnmap(buf->base_ptr + i, chunk));
+            unmap_workaround(buf->base_ptr + i, chunk);
+        }
     }
 
     for (i = 0; i < buf->handle_count; i++) {
